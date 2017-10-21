@@ -1,0 +1,209 @@
+#!/usr/bin/env bash
+set -e
+
+# grub-mkconfig helper script.
+# version 2017.10.21
+#
+# (C) 2017+ ©TriMoon™ <https://github.com/TriMoon>
+# 	------------------------------------------------
+# 	License: BY-NC 4.0
+# 	This work is licensed under a Creative Commons Attribution-NonCommercial 4.0 International License.
+# 	https://creativecommons.org/licenses/by-nc/4.0/
+prefix="/usr"
+exec_prefix="/usr"
+datarootdir="/usr/share"
+
+export TEXTDOMAIN=grub
+export TEXTDOMAINDIR="${datarootdir}/locale"
+
+. "${datarootdir}/grub/grub-mkconfig_lib"
+
+Android_Type="Phoenix-OS"
+Android_dir=/Android-OS/Phoenix
+
+# Output indentation acoarding to indent level in 1st arg.
+menu_indent (){
+	local -i loop
+	local indent_char="$grub_tab"
+	local indent_char="\t"
+
+	for (( loop = 0; loop < $1; loop++ )); do
+		echo -en $indent_char
+	done
+}
+
+android_entry ()
+{
+	local type menu_level title args CLASS
+	type="$1"
+	menu_level="${2:-0}"
+	title="$3"
+	args="$4"
+	CLASS="--class gnu-linux --class gnu --class os --class android-x86"
+
+	if [ -z "$boot_device_id" ]; then
+		boot_device_id="$(grub_get_device_id "${GRUB_DEVICE}")"
+	fi
+	if [ -z "$title" ]; then
+		if [ x"$type" = xsub ]; then
+			title=$(gettext_printf "Android (%s) Menu" ${Android_Type})
+		else
+			title=$(gettext_printf "Android (%s), with defaults" ${Android_Type})
+		fi
+	else
+		title=$(gettext_printf "Android (%s), with %s" ${Android_Type} "${title}")
+	fi
+	# Escape single quotes
+	# TODO: Make use of: gettext_quoted()
+	title=$(echo "$title" | grub_quote)
+
+	# Give notice on stderr
+	gettext_printf "Adding boot menu entry for '$title' configuration\n" >&2
+	if [ x"$type" = xsub ]; then
+		# Compose menu entry
+		menu_entry="submenu"
+		menu_entry+=" '${title}'"
+		menu_entry+=" \$menuentry_id_option 'android-$boot_device_id'"
+		menu_entry+=" {"
+		echo $menu_entry
+	else
+		# Compose menu entry
+		menu_entry="menuentry"
+		menu_entry+=" '${title}'"
+		menu_entry+=" ${CLASS}"
+		menu_entry+=" \$menuentry_id_option 'android-$boot_device_id'"
+		menu_entry+=" {"
+
+		menu_indent $((0 + $menu_level))
+		echo $menu_entry
+
+		# Check quick boot
+		if [ "$quick_boot" = 1 ]; then
+			menu_indent $((1 + $menu_level))
+			echo "recordfail"
+		fi
+
+		# Check save default
+		if [ x$type != xrecovery -a "x${GRUB_SAVEDEFAULT}" = "xtrue" ] ; then
+			menu_indent $((1 + $menu_level))
+			echo "savedefault"
+		fi
+
+		# GPT partition support
+		menu_indent $((1 + $menu_level))
+		echo "insmod part_gpt"
+
+		# Init video mode
+		# 
+		# Use ELILO's generic "efifb" when it's known to be available.
+		# FIXME: We need an interface to select vesafb in case efifb can't be used.
+		if [ "x$GRUB_GFXPAYLOAD_LINUX" = x ]; then
+			menu_indent $((1 + $menu_level))
+			echo "load_video"
+		else
+			if [ "x$GRUB_GFXPAYLOAD_LINUX" != xtext ]; then
+				menu_indent $((1 + $menu_level))
+				echo "load_video"
+			fi
+		fi
+		if	([ "$ubuntu_recovery" = 0 ] || [ x$type != xrecovery ]) \
+			&& \
+			([ "x$GRUB_GFXPAYLOAD_LINUX" != x ] || [ "$gfxpayload_dynamic" = 1 ])
+		then
+			menu_indent $((1 + $menu_level))
+			echo "gfxmode \$linux_gfx_mode"
+		fi
+
+		# GZip support
+		menu_indent $((1 + $menu_level))
+		echo "insmod gzio"
+		menu_indent $((1 + $menu_level))
+		echo "if [ x\$grub_platform = xxen ]; then insmod xzio; insmod lzopio; fi"
+
+		# Set the root to where we find the kernel
+		echo -en "\n"
+		menu_indent $((1 + $menu_level))
+		echo "# Set the root to where we find the kernel"
+		menu_indent $((1 + $menu_level))
+		echo "search --no-floppy --set=root --file ${Android_kernel}"
+
+
+		# Compose the kernel line
+		if [ x"$quiet_boot" = x0 ] || [ x"$type" != xsimple ]; then
+			message="$(gettext_printf "Loading %s ..." "${title}")"
+			echo -en "\n"
+			menu_indent $((1 + $menu_level))
+			echo "echo '$message'"
+		fi
+		linux_cmd="linux"
+		linux_cmd+=" ${Android_kernel}"
+		linux_cmd+=" ${GRUB_CMDLINE_LINUX_DEFAULT}"
+		linux_cmd+=" root=/dev/ram0"
+		linux_cmd+=" androidboot.hardware=android_x86"
+		linux_cmd+=" androidboot.setlinux=permissive"
+		linux_cmd+=" SRC="
+		linux_cmd+=" DATA=${Android_data}"
+		if [ -z "${args}" ]; then
+			linux_cmd+=" vga=788"
+		else
+			linux_cmd+=" ${args}"
+		fi
+		menu_indent $((1 + $menu_level))
+		echo "${linux_cmd}"
+
+		# Compose the initrd line
+		if [ -n "${Android_initrd}" ]; then
+			# TRANSLATORS: ramdisk isn't identifier. Should be translated.
+			if [ x"$quiet_boot" = x0 ] || [ x"$type" != xsimple ]; then
+				message="$(gettext_printf "Loading initial ramdisk ...")"
+				echo -en "\n"
+				menu_indent $((1 + $menu_level))
+				echo "echo '$message'"
+			fi
+			menu_indent $((1 + $menu_level))
+			echo "initrd	${Android_initrd}"
+		fi
+
+		# Close the menu entry
+		menu_indent $((0 + $menu_level))
+		echo "}"
+	fi
+}
+
+Android_kernel="${Android_dir}/kernel"
+Android_initrd="${Android_dir}/initrd.img"
+Android_ramdisk="${Android_dir}/ramdisk.img"
+Android_data="${Android_dir}/data"
+Android_system=""
+test -e "${Android_dir}/system.sfs" && Android_system="${Android_dir}/system.sfs"
+test -e "${Android_dir}/system.img" && Android_system="${Android_dir}/system.img"
+test ! -d "${Android_data}" && mkdir "${Android_data}"
+
+if test -e "${Android_kernel}" \
+	-a -e "${Android_initrd}" \
+	-a -e "${Android_system}" \
+	-a -e "${Android_ramdisk}" \
+	-a -d "${Android_data}"
+then
+	declare -a Menu_Entries=()
+
+	# Generate the menu entries
+	Menu_Entries[0]=""
+	Menu_Entries[1]="TV/VGA Monitor||video=LVDS-1:d video=VGA-1:1024x768"
+	Menu_Entries[2]="HDMI||video=LDVS-1:d video=HDMI-A:1024x768"
+	for (( loop = 0; loop < ${#Menu_Entries[*]}; loop++ )); do
+		entry="${Menu_Entries[$loop]}"
+		title="${entry%%||*}"
+		args="${entry##*||}"
+		if [ $loop -eq 0 ]; then
+			android_entry sub 0 "${title}" "${args}"
+			android_entry init 1 "${title}" "${args}"
+		else
+			android_entry init 1 "${title}" "${args}"
+		fi
+	done
+	# Close the sub-menu entry
+	echo "}"
+else
+	grub_warn "Missing file(s) for Android '${Android_Type}' configuration !" >&2
+fi
